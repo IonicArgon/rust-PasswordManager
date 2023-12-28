@@ -18,25 +18,28 @@ use crate::errors::AppError;
 // ------------------ //
 
 pub trait Initialize {
-    fn new(path: String, password_hash: String, hash_salt: String) -> Self;
+    fn new(path: String) -> Self;
     fn start_up(&mut self) -> Result<bool, AppError>;
     fn create_settings(&self) -> Result<(), AppError>;
     fn load_settings(&mut self);
     fn get_password_hash(&self) -> String;
+    fn get_key_salt(&self) -> String;
 }
 
 pub struct SettingsInitializer {
     path: String,
     password_hash: String,
     hash_salt: String,
+    derived_key_salt: String,
 }
 
 impl Initialize for SettingsInitializer {
-    fn new(path: String, password_hash: String, hash_salt: String) -> Self {
+    fn new(path: String) -> Self {
         SettingsInitializer {
             path,
-            password_hash,
-            hash_salt,
+            password_hash: String::from(""),
+            hash_salt: String::from(""),
+            derived_key_salt: String::from(""),
         }
     }
 
@@ -66,7 +69,7 @@ impl Initialize for SettingsInitializer {
     fn create_settings(&self) -> Result<(), AppError> {
         // create the new json file
         let mut file = match File::create(&self.path) {
-            Err(why) => panic!("couldn't create settings file: {}", why),
+            Err(why) => panic!("Couldn't create settings file: {}", why),
             Ok(file) => file,
         };
 
@@ -75,12 +78,19 @@ impl Initialize for SettingsInitializer {
 
         // generate the salt
         let rng = rand::thread_rng();
-        let salt_string = rng
+        let salt_string = rng.clone()
             .sample_iter(rand::distributions::Alphanumeric)
             .take(32)
             .map(char::from)
             .collect::<String>();
         let salt = SaltString::from_b64(salt_string.as_str()).unwrap();
+
+        // generate the salt used to derive the key
+        let derived_key_salt_string = rng
+            .sample_iter(rand::distributions::Alphanumeric)
+            .take(32)
+            .map(char::from)
+            .collect::<String>();
 
         // get the password
         let q_pass = Question::password("password")
@@ -113,12 +123,13 @@ impl Initialize for SettingsInitializer {
             // serialize the password hash and salt to json
             let json = serde_json::json!({
                 "password_hash": password_hash.to_string(),
-                "hash_salt": salt_string
+                "hash_salt": salt_string,
+                "derived_key_salt": derived_key_salt_string,
             });
 
             // write the json to the file
             match file.write_all(json.to_string().as_bytes()) {
-                Err(why) => panic!("couldn't write to settings file: {}", why),
+                Err(why) => panic!("Couldn't write to settings file: {}", why),
                 Ok(_) => println!("Successfully wrote to settings file."),
             }
         }
@@ -129,14 +140,14 @@ impl Initialize for SettingsInitializer {
     fn load_settings(&mut self) {
         // open the file
         let mut file = match File::open(&self.path) {
-            Err(why) => panic!("couldn't open settings file: {}", why),
+            Err(why) => panic!("Couldn't open settings file: {}", why),
             Ok(file) => file,
         };
 
         // read the file
         let mut contents = String::new();
         match file.read_to_string(&mut contents) {
-            Err(why) => panic!("couldn't read settings file: {}", why),
+            Err(why) => panic!("Couldn't read settings file: {}", why),
             Ok(_) => println!("Successfully read settings file."),
         }
 
@@ -146,10 +157,15 @@ impl Initialize for SettingsInitializer {
         // get the password hash and salt
         self.password_hash = v["password_hash"].as_str().unwrap_or("").to_string();
         self.hash_salt = v["hash_salt"].as_str().unwrap_or("").to_string();
+        self.derived_key_salt = v["derived_key_salt"].as_str().unwrap_or("").to_string();
     }
 
     fn get_password_hash(&self) -> String {
         self.password_hash.clone()
+    }
+
+    fn get_key_salt(&self) -> String {
+        self.derived_key_salt.clone()
     }
 }
 
