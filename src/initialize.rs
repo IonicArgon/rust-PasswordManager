@@ -1,8 +1,8 @@
 // file stuff
 use serde_json;
-use std::{fs::File, fmt::Debug};
 use std::io::prelude::*;
 use std::path::Path;
+use std::{fmt::Debug, fs::File};
 
 // password stuff
 use argon2::{
@@ -19,9 +19,10 @@ use crate::errors::AppError;
 
 pub trait Initialize {
     fn new(path: String, password_hash: String, hash_salt: String) -> Self;
-    fn start_up(&mut self);
+    fn start_up(&mut self) -> Result<bool, AppError>;
     fn create_settings(&self) -> Result<(), AppError>;
     fn load_settings(&mut self);
+    fn get_password_hash(&self) -> String;
 }
 
 pub struct SettingsInitializer {
@@ -39,9 +40,11 @@ impl Initialize for SettingsInitializer {
         }
     }
 
-    fn start_up(&mut self) {
+    fn start_up(&mut self) -> Result<bool, AppError> {
         // check if the file exists
         let path = Path::new(&self.path);
+        let mut made_new_file = false;
+
         if !path.exists() {
             println!("Settings file does not exist. Creating new settings file...");
             loop {
@@ -50,10 +53,14 @@ impl Initialize for SettingsInitializer {
                     Err(e) => println!("{}", e),
                 }
             }
+            made_new_file = true;
         } else {
             println!("Settings file exists. Loading settings...");
-            self.load_settings();
         }
+
+        self.load_settings();
+
+        Ok(made_new_file)
     }
 
     fn create_settings(&self) -> Result<(), AppError> {
@@ -88,11 +95,7 @@ impl Initialize for SettingsInitializer {
 
         let answers = requestty::prompt(vec![q_pass, q_pass_confirm]).unwrap();
 
-        let password = answers
-            .get("password")
-            .unwrap()
-            .as_string()
-            .unwrap() as &str;
+        let password = answers.get("password").unwrap().as_string().unwrap() as &str;
 
         let password_confirm = answers
             .get("password_confirm")
@@ -141,8 +144,12 @@ impl Initialize for SettingsInitializer {
         let v: serde_json::Value = serde_json::from_str(&contents).unwrap();
 
         // get the password hash and salt
-        self.password_hash = v["password_hash"].to_string();
-        self.hash_salt = v["hash_salt"].to_string();
+        self.password_hash = v["password_hash"].as_str().unwrap_or("").to_string();
+        self.hash_salt = v["hash_salt"].as_str().unwrap_or("").to_string();
+    }
+
+    fn get_password_hash(&self) -> String {
+        self.password_hash.clone()
     }
 }
 
