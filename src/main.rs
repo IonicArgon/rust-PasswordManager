@@ -1,8 +1,10 @@
 mod errors;
 mod handle_pass;
 mod initialize;
+mod handle_operations;
 use handle_pass::{PasswordHandler, ProcessPassword};
 use initialize::{Initialize, SettingsInitializer};
+use handle_operations::{DBHandler, ProcessDB, DBOperation};
 
 fn main() {
     let mut settings = SettingsInitializer::new(String::from("settings.json"));
@@ -28,6 +30,44 @@ fn main() {
         Err(e) => {
             println!("{}", e);
             std::process::exit(1);
+        }
+    }
+
+    // create the db handler
+    let mut db_handler = DBHandler::new(String::from("db.json"));
+    let db_res = db_handler.start_up();
+    match db_res {
+        Ok(_) => (),
+        Err(e) => {
+            println!("{}", e);
+            std::process::exit(1);
+        }
+    }
+
+    // main loop
+    loop {
+        let operation = db_handler.inquire_operation();
+        match operation {
+            Ok(DBOperation::Create) => {
+                println!("Create");
+            },
+            Ok(DBOperation::Read) => {
+                println!("Read");
+            },
+            Ok(DBOperation::Update) => {
+                println!("Update");
+            },
+            Ok(DBOperation::Delete) => {
+                println!("Delete");
+            },
+            Ok(DBOperation::Exit) => {
+                println!("Exit");
+                break;
+            },
+            Err(e) => {
+                println!("{}", e);
+                std::process::exit(1);
+            }
         }
     }
 }

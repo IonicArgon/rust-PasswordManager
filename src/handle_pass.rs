@@ -18,7 +18,7 @@ pub trait ProcessPassword {
         password_hash: String,
         derived_key_salt: String,
     ) -> Result<(), AppError>;
-    fn get_decrypt_key(&self) -> String;
+    fn get_decrypt_key(&self) -> Secret<String>;
 }
 
 pub struct PasswordHandler {
@@ -70,7 +70,7 @@ impl ProcessPassword for PasswordHandler {
         }
     }
 
-    fn get_decrypt_key(&self) -> String {
-        self.decrypt_key.expose_secret().clone()
+    fn get_decrypt_key(&self) -> Secret<String> {
+        self.decrypt_key.clone()
     }
 }
