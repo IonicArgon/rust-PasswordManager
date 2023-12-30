@@ -1,10 +1,12 @@
 mod errors;
+mod handle_operations;
 mod handle_pass;
 mod initialize;
-mod handle_operations;
+use handle_operations::{DBHandler, DBOperation, ProcessDB};
 use handle_pass::{PasswordHandler, ProcessPassword};
 use initialize::{Initialize, SettingsInitializer};
-use handle_operations::{DBHandler, ProcessDB, DBOperation};
+
+use secrecy::ExposeSecret;
 
 fn main() {
     let mut settings = SettingsInitializer::new(String::from("settings.json"));
@@ -19,14 +21,12 @@ fn main() {
     }
 
     let mut password_handler = PasswordHandler::new();
-    let password_res = password_handler.verify_password(
-        settings.get_password_hash(),
-        settings.get_key_salt(),
-    );
+    let password_res =
+        password_handler.verify_password(settings.get_password_hash(), settings.get_key_salt());
     match password_res {
         Ok(_) => {
             println!("Password verified!");
-        },
+        }
         Err(e) => {
             println!("{}", e);
             std::process::exit(1);
@@ -48,22 +48,25 @@ fn main() {
     loop {
         let operation = db_handler.inquire_operation();
         match operation {
+            Ok(DBOperation::List) => {
+                println!("List");
+            }
+            Ok(DBOperation::Search) => {
+                println!("Search");
+            }
             Ok(DBOperation::Create) => {
-                println!("Create");
-            },
-            Ok(DBOperation::Read) => {
-                println!("Read");
-            },
+                let _ = db_handler.create_entry(password_handler.get_decrypt_key().expose_secret());
+            }
             Ok(DBOperation::Update) => {
                 println!("Update");
-            },
+            }
             Ok(DBOperation::Delete) => {
                 println!("Delete");
-            },
+            }
             Ok(DBOperation::Exit) => {
                 println!("Exit");
                 break;
-            },
+            }
             Err(e) => {
                 println!("{}", e);
                 std::process::exit(1);
