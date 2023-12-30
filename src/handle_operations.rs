@@ -14,6 +14,7 @@ use chacha20::{
     ChaCha20
 };
 use sha2::{Digest, Sha256};
+use rand::Rng;
 
 // other stuff
 use hex;
@@ -64,6 +65,10 @@ impl ProcessDB for DBHandler {
             println!("Database file does not exist. Creating new database file...");
             loop {
                 match self.create_db() {
+                    Ok(_) => (),
+                    Err(e) => println!("{}", e),
+                }
+                match self.load_db() {
                     Ok(_) => break,
                     Err(e) => println!("{}", e),
                 }
@@ -256,7 +261,8 @@ impl ProcessDB for DBHandler {
 
             let mut field = serde_json::json!({
                 "type": field_type,
-                "data": []
+                "data": [],
+                "nonce": [],
             });
 
             for j in 0..field_data.len() {
@@ -269,8 +275,12 @@ impl ProcessDB for DBHandler {
                 let mut hasher = Sha256::new();
                 hasher.update(comb);
                 let hash = hasher.finalize();
-                let hash_slice = &hash[..12];
-                let nonce = GenericArray::clone_from_slice(hash_slice);
+
+                let mut nonce = [0u8; 12];
+                let mut rng = rand::thread_rng();
+                rng.fill(&mut nonce);
+                let nonce = GenericArray::clone_from_slice(&nonce);
+
 
                 let mut cipher = ChaCha20::new(&hash.into(), &nonce.into());
                 let mut encrypted = field_data_str.expose_secret().clone().into_bytes();
@@ -281,6 +291,7 @@ impl ProcessDB for DBHandler {
                 let encrypted_str = hex::encode(encrypted);
 
                 field["data"].as_array_mut().unwrap().push(serde_json::Value::String(encrypted_str));
+                field["nonce"].as_array_mut().unwrap().push(serde_json::Value::String(hex::encode(nonce)));
             }
 
             entry["fields"].as_array_mut().unwrap().push(field);

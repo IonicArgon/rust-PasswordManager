@@ -2,9 +2,12 @@ mod errors;
 mod handle_operations;
 mod handle_pass;
 mod initialize;
+mod handle_logo;
+
 use handle_operations::{DBHandler, DBOperation, ProcessDB};
 use handle_pass::{PasswordHandler, ProcessPassword};
 use initialize::{Initialize, SettingsInitializer};
+use handle_logo::{HandleLogo, LogoHandler};
 
 use secrecy::ExposeSecret;
 
@@ -43,6 +46,10 @@ fn main() {
             std::process::exit(1);
         }
     }
+
+    // print the title
+    let logo_handler = LogoHandler {};
+    logo_handler.print_logo();
 
     // main loop
     loop {
