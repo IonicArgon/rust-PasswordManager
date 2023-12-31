@@ -10,6 +10,7 @@ use initialize::{Initialize, SettingsInitializer};
 use handle_logo::{HandleLogo, LogoHandler};
 
 use secrecy::ExposeSecret;
+use std::process::Command;
 
 fn main() {
     let mut settings = SettingsInitializer::new(String::from("settings.json"));
@@ -56,10 +57,10 @@ fn main() {
         let operation = db_handler.inquire_operation();
         match operation {
             Ok(DBOperation::List) => {
-                println!("List");
+                let _ = db_handler.list_entries();
             }
-            Ok(DBOperation::Search) => {
-                println!("Search");
+            Ok(DBOperation::View) => {
+                let _ = db_handler.view_entry(password_handler.get_decrypt_key().expose_secret());
             }
             Ok(DBOperation::Create) => {
                 let _ = db_handler.create_entry(password_handler.get_decrypt_key().expose_secret());
@@ -72,6 +73,7 @@ fn main() {
             }
             Ok(DBOperation::Exit) => {
                 println!("Exit");
+                let _ = Command::new("clear").status();
                 break;
             }
             Err(e) => {

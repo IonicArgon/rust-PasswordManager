@@ -3,20 +3,21 @@ use requestty::Question;
 
 // file stuff
 use serde_json;
-use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
+use std::{fs::File, vec};
 
 // password stuff
-use secrecy::{ExposeSecret, Secret};
 use chacha20::{
-    cipher::{KeyIvInit, StreamCipher, generic_array::GenericArray},
-    ChaCha20
+    cipher::{generic_array::GenericArray, KeyIvInit, StreamCipher},
+    ChaCha20,
 };
-use sha2::{Digest, Sha256};
 use rand::Rng;
+use secrecy::{ExposeSecret, Secret};
+use sha2::{Digest, Sha256};
 
 // other stuff
+use colored::Colorize;
 use hex;
 
 // my stuff
@@ -24,7 +25,7 @@ use crate::errors::AppError;
 
 pub enum DBOperation {
     List,
-    Search,
+    View,
     Create,
     Update,
     Delete,
@@ -36,6 +37,11 @@ pub struct DBHandler {
     json: serde_json::Value,
 }
 
+pub struct DBField {
+    field_type: String,
+    field_data: Vec<Secret<String>>,
+}
+
 pub trait ProcessDB {
     fn new(path: String) -> Self;
     fn start_up(&mut self) -> Result<(), AppError>;
@@ -43,10 +49,9 @@ pub trait ProcessDB {
     fn load_db(&mut self) -> Result<(), AppError>;
 
     fn inquire_operation(&self) -> Result<DBOperation, AppError>;
+    fn list_entries(&self) -> Result<(), AppError>;
+    fn view_entry(&self, key: &String) -> Result<(), AppError>;
     fn create_entry(&mut self, key: &String) -> Result<(), AppError>;
-    //fn read_entry(&self) -> Result<(), AppError>;
-    //fn update_entry(&mut self) -> Result<(), AppError>;
-    //fn delete_entry(&mut self) -> Result<(), AppError>;
 }
 
 impl ProcessDB for DBHandler {
@@ -135,14 +140,7 @@ impl ProcessDB for DBHandler {
     fn inquire_operation(&self) -> Result<DBOperation, AppError> {
         let q_operation = Question::select("operation")
             .message("What operation would you like to perform?")
-            .choices(vec![
-                "List",
-                "Search",
-                "Create",
-                "Update",
-                "Delete",
-                "Exit",
-            ])
+            .choices(vec!["List", "View", "Create", "Update", "Delete", "Exit"])
             .build();
 
         let answer = requestty::prompt_one(q_operation).unwrap();
@@ -150,7 +148,7 @@ impl ProcessDB for DBHandler {
 
         match operation {
             "List" => Ok(DBOperation::List),
-            "Search" => Ok(DBOperation::Search),
+            "View" => Ok(DBOperation::View),
             "Create" => Ok(DBOperation::Create),
             "Update" => Ok(DBOperation::Update),
             "Delete" => Ok(DBOperation::Delete),
@@ -159,13 +157,148 @@ impl ProcessDB for DBHandler {
         }
     }
 
+    fn list_entries(&self) -> Result<(), AppError> {
+        let entries = self.json["entries"].as_array().unwrap();
+
+        if entries.len() == 0 {
+            let no_entries = "No entries.".cyan();
+            println!("{}", no_entries);
+            return Ok(());
+        }
+
+        let entries_title = "Entries:".cyan();
+        println!("{}", entries_title);
+        for (i, entry) in entries.iter().enumerate() {
+            let number = format!("{}.", i + 1).cyan();
+            let name = entry["name"].as_str().unwrap();
+            println!("{} {}", number, name);
+        }
+        println!();
+
+        Ok(())
+    }
+
+    fn view_entry(&self, key: &String) -> Result<(), AppError> {
+        let entries = self.json["entries"].as_array().unwrap();
+
+        if entries.len() == 0 {
+            let no_entries = "No entries.".cyan();
+            println!("{}", no_entries);
+            return Ok(());
+        }
+
+        let q_entry = Question::input("entry")
+            .message("Entry name: ")
+            .build();
+
+        let answer = requestty::prompt_one(q_entry).unwrap();
+        let entry_name = answer.as_string().unwrap();
+
+        // find the entry
+        let mut entry: Option<&serde_json::Value> = None;
+        for e in entries {
+            if e["name"].as_str().unwrap() == entry_name {
+                entry = Some(e);
+                break;
+            }
+        }
+
+        if entry.is_none() {
+            let entry_not_found = "Entry not found.".cyan();
+            println!("{}", entry_not_found);
+            return Ok(());
+        }
+
+        let entry = entry.unwrap();
+
+        // print the entry
+        let entry_title = format!("Entry: {}", entry["name"].as_str().unwrap()).cyan();
+        println!("{}", entry_title);
+
+        // we have to decrypt the fields before we can print them
+        let fields = entry["fields"].as_array().unwrap();
+        let mut decrypted_fields: Vec<DBField> = Vec::new();
+
+        for field in fields {
+            let field_type = field["type"].as_str().unwrap();
+
+            let encrypted_field_data = field["data"].as_array().unwrap();
+            let encrypted_field_nonce = field["nonce"].as_array().unwrap();
+
+            let mut decrypted_field_data: Vec<Secret<String>> = Vec::new();
+
+            for i in 0..encrypted_field_data.len() {
+                let encrypted_field_data_str = encrypted_field_data[i].as_str().unwrap();
+                let encrypted_field_nonce_str = encrypted_field_nonce[i].as_str().unwrap();
+
+                let encrypted_field_data_bytes = hex::decode(encrypted_field_data_str).unwrap();
+                let encrypted_field_nonce_bytes = hex::decode(encrypted_field_nonce_str).unwrap();
+
+                let mut comb = Vec::new();
+                comb.extend_from_slice(key.as_bytes());
+                comb.extend_from_slice(entry_name.as_bytes());
+
+                let mut hasher = Sha256::new();
+                hasher.update(comb);
+                let hash = hasher.finalize();
+
+                let nonce = GenericArray::clone_from_slice(&encrypted_field_nonce_bytes);
+                let mut cipher = ChaCha20::new(&hash.into(), &nonce.into());
+
+                let mut decrypted_field_data_bytes = encrypted_field_data_bytes.clone();
+                cipher.apply_keystream(&mut decrypted_field_data_bytes);
+
+                let decrypted_field_data_str =
+                    String::from_utf8(decrypted_field_data_bytes).unwrap();
+
+                decrypted_field_data.push(Secret::new(decrypted_field_data_str));
+            }
+
+            decrypted_fields.push(DBField {
+                field_type: String::from(field_type),
+                field_data: decrypted_field_data,
+            });
+        }
+
+        // now we can print the fields
+        for (i, field) in decrypted_fields.iter().enumerate() {
+            let number = format!("{}.", i + 1).cyan();
+            let field_type = field.field_type.as_str();
+
+            if field_type == "Username" || field_type == "Password" {
+                let field_data = field.field_data[0].expose_secret();
+                println!("{} {}: {}", number, field_type, field_data);
+            } else if field_type == "Security Question" {
+                let field_data_question = field.field_data[0].expose_secret();
+                let field_data_answer = field.field_data[1].expose_secret();
+                println!(
+                    "{} {}: {}",
+                    number, field_type, field_data_question
+                );
+                println!(
+                    "{} {}: {}",
+                    number, "Answer".cyan(), field_data_answer
+                );
+            } else {
+                let field_data_name = field.field_data[0].expose_secret();
+                let field_data_data = field.field_data[1].expose_secret();
+                println!(
+                    "{} {}: {}",
+                    number, field_data_name, field_data_data
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     fn create_entry(&mut self, key: &String) -> Result<(), AppError> {
         // get name of whatever website or service this entry is for
         let q_name = Question::input("name")
             .message("What is the name of this entry?")
             .build();
 
-        let answer = requestty::prompt_one(q_name).unwrap();    
+        let answer = requestty::prompt_one(q_name).unwrap();
         let name = answer.as_string().unwrap();
 
         // ask for number of fields for this entry
@@ -184,12 +317,7 @@ impl ProcessDB for DBHandler {
             // get the type of the field
             let q_field_type = Question::select(format!("field_type_{}", i))
                 .message(format!("What type is field {}?", i + 1))
-                .choices(vec![
-                    "Username",
-                    "Password",
-                    "Security Question",
-                    "Other",
-                ])
+                .choices(vec!["Username", "Password", "Security Question", "Other"])
                 .build();
 
             let answer = requestty::prompt_one(q_field_type).unwrap();
@@ -281,7 +409,6 @@ impl ProcessDB for DBHandler {
                 rng.fill(&mut nonce);
                 let nonce = GenericArray::clone_from_slice(&nonce);
 
-
                 let mut cipher = ChaCha20::new(&hash.into(), &nonce.into());
                 let mut encrypted = field_data_str.expose_secret().clone().into_bytes();
 
@@ -290,14 +417,21 @@ impl ProcessDB for DBHandler {
                 // convert the encrypted bytes to a string of the literal hex
                 let encrypted_str = hex::encode(encrypted);
 
-                field["data"].as_array_mut().unwrap().push(serde_json::Value::String(encrypted_str));
-                field["nonce"].as_array_mut().unwrap().push(serde_json::Value::String(hex::encode(nonce)));
+                field["data"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::Value::String(encrypted_str));
+                field["nonce"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::Value::String(hex::encode(nonce)));
             }
 
             entry["fields"].as_array_mut().unwrap().push(field);
         }
 
         json["entries"].as_array_mut().unwrap().push(entry);
+        self.json = json.clone();
 
         // write the json to the file
         //? file is guaranteed to exist at this point
