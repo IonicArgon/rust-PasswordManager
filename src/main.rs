@@ -1,19 +1,24 @@
 mod errors;
+mod handle_logo;
 mod handle_operations;
 mod handle_pass;
 mod initialize;
-mod handle_logo;
 
+use handle_logo::{HandleLogo, LogoHandler};
 use handle_operations::{DBHandler, DBOperation, ProcessDB};
 use handle_pass::{PasswordHandler, ProcessPassword};
 use initialize::{Initialize, SettingsInitializer};
-use handle_logo::{HandleLogo, LogoHandler};
 
 use secrecy::ExposeSecret;
 use std::process::Command;
 
 fn main() {
-    let mut settings = SettingsInitializer::new(String::from("settings.json"));
+    // get current directory
+    let current_dir = std::env::current_dir().unwrap();
+    let current_dir = current_dir.to_str().unwrap();
+
+    let mut settings =
+        SettingsInitializer::new(String::from(format!("{}/settings.json", current_dir)));
 
     let start_up_res = settings.start_up();
     match start_up_res {
@@ -38,7 +43,7 @@ fn main() {
     }
 
     // create the db handler
-    let mut db_handler = DBHandler::new(String::from("db.json"));
+    let mut db_handler = DBHandler::new(String::from(format!("{}/db.json", current_dir)));
     let db_res = db_handler.start_up();
     match db_res {
         Ok(_) => (),
