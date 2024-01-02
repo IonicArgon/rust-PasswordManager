@@ -66,10 +66,10 @@ fn main() {
                 let _ = db_handler.create_entry(password_handler.get_decrypt_key().expose_secret());
             }
             Ok(DBOperation::Update) => {
-                println!("Update");
+                let _ = db_handler.update_entry(password_handler.get_decrypt_key().expose_secret());
             }
             Ok(DBOperation::Delete) => {
-                println!("Delete");
+                let _ = db_handler.delete_entry();
             }
             Ok(DBOperation::Exit) => {
                 println!("Exit");

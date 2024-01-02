@@ -42,6 +42,9 @@ pub struct DBField {
     field_data: Vec<Secret<String>>,
 }
 
+//todo: - extract like half of these operations into separate traits
+//todo: - also there's a lot of repeat code here, so maybe extract that into a
+//todo:   reusable trait as well
 pub trait ProcessDB {
     fn new(path: String) -> Self;
     fn start_up(&mut self) -> Result<(), AppError>;
@@ -52,6 +55,8 @@ pub trait ProcessDB {
     fn list_entries(&self) -> Result<(), AppError>;
     fn view_entry(&self, key: &String) -> Result<(), AppError>;
     fn create_entry(&mut self, key: &String) -> Result<(), AppError>;
+    fn update_entry(&mut self, key: &String) -> Result<(), AppError>;
+    fn delete_entry(&mut self) -> Result<(), AppError>;
 }
 
 impl ProcessDB for DBHandler {
@@ -431,6 +436,329 @@ impl ProcessDB for DBHandler {
         }
 
         json["entries"].as_array_mut().unwrap().push(entry);
+        self.json = json.clone();
+
+        // write the json to the file
+        //? file is guaranteed to exist at this point
+        let mut file = match File::create(&self.path) {
+            Err(why) => panic!("Couldn't create database file: {}", why),
+            Ok(file) => file,
+        };
+
+        match file.write_all(json.to_string().as_bytes()) {
+            Err(why) => panic!("Couldn't write to database file: {}", why),
+            Ok(_) => (),
+        }
+
+        Ok(())
+    }
+
+    fn update_entry(&mut self, key: &String) -> Result<(), AppError> {
+        let entries = self.json["entries"].as_array().unwrap();
+
+        if entries.len() == 0 {
+            let no_entries = "No entries.".cyan();
+            println!("{}", no_entries);
+            return Ok(());
+        }
+
+        let q_entry = Question::input("entry")
+            .message("Entry name: ")
+            .build();
+
+        let answer = requestty::prompt_one(q_entry).unwrap();
+        let entry_name = answer.as_string().unwrap();
+
+        // find the entry
+        let mut entry: Option<&serde_json::Value> = None;
+        for e in entries {
+            if e["name"].as_str().unwrap() == entry_name {
+                entry = Some(e);
+                break;
+            }
+        }
+
+        if entry.is_none() {
+            let entry_not_found = "Entry not found.".cyan();
+            println!("{}", entry_not_found);
+            return Ok(());
+        }
+
+        let entry = entry.unwrap();
+
+        // print the entry
+        let entry_title = format!("Entry: {}", entry["name"].as_str().unwrap()).cyan();
+        println!("{}", entry_title);
+
+        // we have to decrypt the fields before we can print them
+        let fields = entry["fields"].as_array().unwrap();
+        let mut decrypted_fields: Vec<DBField> = Vec::new();
+
+        for field in fields {
+            let field_type = field["type"].as_str().unwrap();
+
+            let encrypted_field_data = field["data"].as_array().unwrap();
+            let encrypted_field_nonce = field["nonce"].as_array().unwrap();
+
+            let mut decrypted_field_data: Vec<Secret<String>> = Vec::new();
+
+            for i in 0..encrypted_field_data.len() {
+                let encrypted_field_data_str = encrypted_field_data[i].as_str().unwrap();
+                let encrypted_field_nonce_str = encrypted_field_nonce[i].as_str().unwrap();
+
+                let encrypted_field_data_bytes = hex::decode(encrypted_field_data_str).unwrap();
+                let encrypted_field_nonce_bytes = hex::decode(encrypted_field_nonce_str).unwrap();
+
+                let mut comb = Vec::new();
+                comb.extend_from_slice(key.as_bytes());
+                comb.extend_from_slice(entry_name.as_bytes());
+
+                let mut hasher = Sha256::new();
+                hasher.update(comb);
+                let hash = hasher.finalize();
+
+                let nonce = GenericArray::clone_from_slice(&encrypted_field_nonce_bytes);
+                let mut cipher = ChaCha20::new(&hash.into(), &nonce.into());
+
+                let mut decrypted_field_data_bytes = encrypted_field_data_bytes.clone();
+
+                cipher.apply_keystream(&mut decrypted_field_data_bytes);
+
+                let decrypted_field_data_str =
+                    String::from_utf8(decrypted_field_data_bytes).unwrap();
+
+                decrypted_field_data.push(Secret::new(decrypted_field_data_str));
+            }
+
+            decrypted_fields.push(DBField {
+                field_type: String::from(field_type),
+                field_data: decrypted_field_data,
+            });
+        }
+
+        // ask which field to update
+        let q_field = Question::select("field")
+            .message("Which field would you like to update?")
+            .choices(
+                decrypted_fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, field)| {
+                        let number = format!("{}.", i + 1).cyan();
+                        let field_type = field.field_type.as_str();
+                        format!("{} {}", number, field_type)
+                    })
+                    .collect::<Vec<String>>(),
+            )
+            .build();
+
+        let answer = requestty::prompt_one(q_field).unwrap();
+        let field_index = answer.as_list_item().unwrap().index;
+
+        // get the new field data
+        let field_type = decrypted_fields[field_index].field_type.as_str();
+
+        let mut field_data: Vec<Secret<String>> = Vec::new();
+
+        if field_type == "Username" || field_type == "Password" {
+            let q_field_data = Question::password("field_data")
+                .message("Enter new data:")
+                .mask('*')
+                .build();
+
+            let answer = requestty::prompt_one(q_field_data).unwrap();
+            let field_data_str = Secret::new(String::from(answer.as_string().unwrap()));
+
+            field_data.push(field_data_str.clone());
+        } else if field_type == "Security Question" {
+            // the first part of the field data is the question, the second part is the answer
+            let q_field_data_question = Question::input("field_data_question")
+                .message("Enter new question:")
+                .build();
+
+            let answer = requestty::prompt_one(q_field_data_question).unwrap();
+            let field_data_question = Secret::new(String::from(answer.as_string().unwrap()));
+
+            let q_field_data_answer = Question::password("field_data_answer")
+                .message("Enter new answer:")
+                .mask('*')
+                .build();
+
+            let answer = requestty::prompt_one(q_field_data_answer).unwrap();
+            let field_data_answer = Secret::new(String::from(answer.as_string().unwrap()));
+
+            field_data.push(field_data_question.clone());
+            field_data.push(field_data_answer.clone());
+        } else {
+            // the "other" field contains the name of the custom field and the data
+            let q_field_data_name = Question::input("field_data_name")
+                .message("Enter new name:")
+                .build();
+
+            let answer = requestty::prompt_one(q_field_data_name).unwrap();
+            let field_data_name = Secret::new(String::from(answer.as_string().unwrap()));
+
+            let q_field_data_data = Question::password("field_data_data")
+                .message("Enter new data:")
+                .mask('*')
+                .build();
+
+            let answer = requestty::prompt_one(q_field_data_data).unwrap();
+            let field_data_data = Secret::new(String::from(answer.as_string().unwrap()));
+
+            field_data.push(field_data_name.clone());
+            field_data.push(field_data_data.clone());
+        }
+
+        // assemble json, encrypt, and write to file
+        let mut json = self.json.clone();
+        
+        let mut new_entry = serde_json::json!({
+            "name": entry_name,
+            "fields": []
+        });
+
+        for i in 0..fields.len() {
+            let field = fields[i].clone();
+
+            let mut new_field = serde_json::json!({
+                "type": field["type"],
+                "data": [],
+                "nonce": [],
+            });
+
+            if i == field_index {
+                for j in 0..field_data.len() {
+                    let field_data_str = field_data[j].clone();
+
+                    let mut comb = Vec::new();
+                    comb.extend_from_slice(key.as_bytes());
+                    comb.extend_from_slice(entry_name.as_bytes());
+
+                    let mut hasher = Sha256::new();
+                    hasher.update(comb);
+                    let hash = hasher.finalize();
+
+                    let mut nonce = [0u8; 12];
+                    let mut rng = rand::thread_rng();
+                    rng.fill(&mut nonce);
+                    let nonce = GenericArray::clone_from_slice(&nonce);
+
+                    let mut cipher = ChaCha20::new(&hash.into(), &nonce.into());
+                    let mut encrypted = field_data_str.expose_secret().clone().into_bytes();
+
+                    cipher.apply_keystream(&mut encrypted);
+
+                    // convert the encrypted bytes to a string of the literal hex
+                    let encrypted_str = hex::encode(encrypted);
+
+                    new_field["data"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(serde_json::Value::String(encrypted_str));
+                    new_field["nonce"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(serde_json::Value::String(hex::encode(nonce)));
+                }
+            } else {
+                new_field["data"] = field["data"].clone();
+                new_field["nonce"] = field["nonce"].clone();
+            }
+
+            new_entry["fields"].as_array_mut().unwrap().push(new_field);
+        }
+
+        // replace the old entry with the new entry
+        let mut new_entries: Vec<serde_json::Value> = Vec::new();
+        for e in entries {
+            if e["name"].as_str().unwrap() == entry_name {
+                new_entries.push(new_entry.clone());
+            } else {
+                new_entries.push(e.clone());
+            }
+        }
+
+        json["entries"] = serde_json::Value::Array(new_entries);
+        self.json = json.clone();
+
+        // write the json to the file
+        //? file is guaranteed to exist at this point
+        let mut file = match File::create(&self.path) {
+            Err(why) => panic!("Couldn't create database file: {}", why),
+            Ok(file) => file,
+        };
+
+        match file.write_all(json.to_string().as_bytes()) {
+            Err(why) => panic!("Couldn't write to database file: {}", why),
+            Ok(_) => (),
+        }
+        
+        Ok(())
+    }
+
+    fn delete_entry(&mut self) -> Result<(), AppError> {
+        let entries = self.json["entries"].as_array().unwrap();
+
+        if entries.len() == 0 {
+            let no_entries = "No entries.".cyan();
+            println!("{}", no_entries);
+            return Ok(());
+        }
+
+        let q_entry = Question::input("entry")
+            .message("Entry name: ")
+            .build();
+
+        let answer = requestty::prompt_one(q_entry).unwrap();
+        let entry_name = answer.as_string().unwrap();
+
+        // find the entry
+        let mut entry: Option<&serde_json::Value> = None;
+        for e in entries {
+            if e["name"].as_str().unwrap() == entry_name {
+                entry = Some(e);
+                break;
+            }
+        }
+
+        if entry.is_none() {
+            let entry_not_found = "Entry not found.".cyan();
+            println!("{}", entry_not_found);
+            return Ok(());
+        }
+
+        let entry = entry.unwrap();
+
+        // print the entry
+        let entry_title = format!("Entry: {}", entry["name"].as_str().unwrap()).cyan();
+        println!("{}", entry_title);
+
+        // ask if they are sure they want to delete the entry
+        let q_delete = Question::confirm("delete")
+            .message("Are you sure you want to delete this entry?")
+            .build();
+
+        let answer = requestty::prompt_one(q_delete).unwrap();
+        let delete = answer.as_bool().unwrap();
+
+        if !delete {
+            let delete_cancelled = "Delete cancelled.".cyan();
+            println!("{}", delete_cancelled);
+            return Ok(());
+        }
+
+        // delete the entry from the json
+        let mut new_entries: Vec<serde_json::Value> = Vec::new();
+
+        for e in entries {
+            if e["name"].as_str().unwrap() != entry_name {
+                new_entries.push(e.clone());
+            }
+        }
+
+        let mut json = self.json.clone();
+        json["entries"] = serde_json::Value::Array(new_entries);
         self.json = json.clone();
 
         // write the json to the file
